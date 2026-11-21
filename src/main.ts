@@ -28,10 +28,12 @@ const app = await NestFactory.create(AuthModule, new ExpressAdapter(server), { b
 app.enableShutdownHooks();
 
 const protocol = app.get(OidcService).provider.callback();
-const uiPaths = new Set(['/', '/readyz', '/account', '/forgot-password', '/reset', '/reset-link.js']);
+const uiPaths = new Set(['/', '/readyz', '/account', '/forgot-password', '/reset', '/reset-link.js', '/continue.js']);
 server.use((req, res, next) => {
   if (uiPaths.has(req.path) || req.path.startsWith('/interaction/') || req.path.startsWith('/social/')) {
     res.set('Cache-Control', 'no-store');
+    // Browsers send a null Origin on form POSTs from pages using no-referrer.
+    res.set('Referrer-Policy', 'same-origin');
     next();
     return;
   }

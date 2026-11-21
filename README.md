@@ -1,6 +1,6 @@
 # ReelTone Auth
 
-NestJS and TypeScript service for ReelTone sign-in. It uses `oidc-provider` for downstream OpenID Connect and PostgreSQL for Auth accounts, email challenges, sessions, and grants.
+NestJS and TypeScript service for ReelTone sign-in. It uses `oidc-provider` for downstream OpenID Connect and PostgreSQL for Auth accounts, email challenges, sessions, and grants. The [workspace Compose stack](../util/README.md) runs it alongside Reviews.
 
 ## Run locally
 

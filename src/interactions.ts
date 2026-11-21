@@ -89,6 +89,10 @@ export class InteractionController {
       await this.grant(req, res, interaction);
       return;
     }
+    if (interaction.params.login_hint === 'signup' && req.query.mode !== 'login') {
+      this.signupView(res, interaction.uid);
+      return;
+    }
     this.signinView(res, interaction.uid);
   }
 
@@ -157,11 +161,18 @@ export class InteractionController {
     const provider = providerName(req.params.provider);
     try {
       const url = await this.social.start(provider, uid);
-      res.redirect(303, url);
+      // End the form navigation before leaving Auth so form-action can stay self-only.
+      const name = provider === 'google' ? 'Google' : 'GitHub';
+      this.continueView(res, `Continue to ${name}`, url);
     } catch (error) {
       if (!(error instanceof FormError)) console.error('Could not start a social sign-in');
       this.signinView(res.status(400), uid, 'Could not start social sign-in. Try again.');
     }
+  }
+
+  @Get('continue.js')
+  continueScript(@Res() res: Response) {
+    res.type('application/javascript').send("const link = document.getElementById('continue-link'); if (link) location.replace(link.href);");
   }
 
   @Get('social/:provider/callback')
@@ -292,7 +303,17 @@ export class InteractionController {
   }
 
   private async finish(req: Request, res: Response, accountId: string, amr: string) {
-    await this.provider.interactionFinished(req, res, { login: { accountId, amr: [amr] } }, { mergeWithLastSubmission: false });
+    const url = await this.provider.interactionResult(req, res, { login: { accountId, amr: [amr] } }, { mergeWithLastSubmission: false });
+    if (req.method === 'GET') {
+      res.redirect(303, url);
+      return;
+    }
+    this.continueView(res, 'Continue signing in', url);
+  }
+
+  private continueView(res: Response, title: string, url: string) {
+    res.status(200).send(page(title,
+      `<a id="continue-link" href="${escape(url)}">${escape(title)}</a><script src="/continue.js" defer></script>`));
   }
 
   private async grant(req: Request, res: Response, interaction: Interaction) {
@@ -351,7 +372,7 @@ export class InteractionController {
   private signupView(res: Response, uid: string, attempt = '', identity?: SocialIdentity, error?: string) {
     const path = `/interaction/${uid}`;
     res.send(page('Create your account', form(`${path}/signup/code`, csrf(uid), emailInput(identity?.email)
-      + hidden('attempt', attempt), 'Send verification code') + `<a href="${path}">Back to sign in</a>`, error));
+      + hidden('attempt', attempt), 'Send verification code') + `<a href="${path}?mode=login">Back to sign in</a>`, error));
   }
 
   private verifyView(res: Response, uid: string, id: string, attempt: string, identity?: SocialIdentity, error?: string) {
