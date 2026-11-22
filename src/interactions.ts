@@ -39,6 +39,10 @@ function message(error: unknown) {
 }
 
 function csrf(uid: string) { return digest('interaction', uid).toString('hex'); }
+function signupPath(uid: string, attempt = '') {
+  const path = `/interaction/${uid}/signup`;
+  return attempt ? `${path}?${new URLSearchParams({ attempt })}` : path;
+}
 const standaloneCookie = config.secure ? '__Host-reeltone_form' : 'reeltone_form';
 
 @Controller()
@@ -113,7 +117,10 @@ export class InteractionController {
   @Get('interaction/:uid/signup')
   async signup(@Req() req: Request, @Res() res: Response) {
     const { uid } = await this.load(req, res, true);
-    this.signupView(res, uid);
+    const attempt = argument(req.query.attempt);
+    const identity = attempt ? await this.pendingSignup(res, uid, attempt) : undefined;
+    if (attempt && !identity) return;
+    this.signupView(res, uid, attempt, identity);
   }
 
   @Post('interaction/:uid/signup/code')
@@ -121,13 +128,16 @@ export class InteractionController {
   async requestCode(@Req() req: Request, @Res() res: Response) {
     const { uid, formData } = await this.loginForm(req, res);
     const attempt = field(formData, 'attempt');
-    const identity = attempt ? await this.social.pending(attempt, uid).catch((error: unknown) => {
-      throw new BadRequestException(message(error));
-    }) : undefined;
+    const identity = attempt ? await this.pendingSignup(res, uid, attempt) : undefined;
+    if (attempt && !identity) return;
     try {
       const email = normalizeEmail(field(formData, 'email'));
       await this.accounts.limit('send-code', email, 4);
       const id = await this.accounts.sendVerification(email, uid);
+      if (!id) {
+        this.signupView(res.status(503), uid, attempt, identity, 'Could not send the verification code. Try again.');
+        return;
+      }
       this.verifyView(res, uid, id, attempt, identity);
     } catch (error) {
       this.signupView(res.status(400), uid, attempt, identity, message(error));
@@ -139,9 +149,9 @@ export class InteractionController {
     const { uid, formData } = await this.loginForm(req, res);
     const attempt = field(formData, 'attempt');
     const id = field(formData, 'challenge');
-    let identity: SocialIdentity | undefined;
+    const identity = attempt ? await this.pendingSignup(res, uid, attempt) : undefined;
+    if (attempt && !identity) return;
     try {
-      identity = attempt ? await this.social.pending(attempt, uid) : undefined;
       const user = readProfile(formData);
       const code = field(formData, 'code');
       if (!/^\d{6}$/.test(code)) throw new FormError('Enter the six-digit code from your email.');
@@ -184,16 +194,21 @@ export class InteractionController {
     }
     const state = argument(req.query.state);
     try {
-      const path = await this.social.returnPath(provider, state);
+      const attempt = await this.social.callbackAttempt(provider, state);
+      if (attempt.signup_pending) {
+        res.redirect(303, signupPath(attempt.interaction_id, attempt.id));
+        return;
+      }
+      if (attempt.consumed) throw new FormError('This social sign-in link has already been used.');
       const query = new URLSearchParams({ state });
       for (const key of ['code', 'error', 'iss']) {
         const value = argument(req.query[key]);
         if (value) query.set(key, value);
       }
       // The interaction cookie is scoped to this path.
-      res.redirect(303, `${path}?${query}`);
+      res.redirect(303, `/interaction/${attempt.interaction_id}/social/${provider}/return?${query}`);
     } catch (error) {
-      res.status(400).send(page('Sign-in expired', '<p>Return to your ReelTone app to try again.</p>', message(error)));
+      res.status(400).send(page('Could not continue sign-in', '<p>Return to your ReelTone app to try again.</p>', message(error)));
     }
   }
 
@@ -205,10 +220,10 @@ export class InteractionController {
     callback.search = new URL(req.originalUrl, config.issuer).search;
     try {
       const result = await this.social.complete(provider, uid, callback);
-      if (result.account) {
+      if (result.signup === undefined) {
         await this.finish(req, res, result.account, 'federated');
       } else {
-        this.signupView(res, uid, result.signup, await this.social.pending(result.signup!, uid));
+        res.redirect(303, signupPath(uid, result.signup));
       }
     } catch (error) {
       this.signinView(res.status(400), uid, message(error));
@@ -285,6 +300,12 @@ export class InteractionController {
     }
     await this.accounts.limit('interaction-ip', req.ip ?? 'unknown', 90);
     return { uid, formData };
+  }
+
+  private async pendingSignup(res: Response, uid: string, attempt: string) {
+    const identity = await this.social.pending(attempt, uid);
+    if (!identity) this.signinView(res.status(400), uid, 'This social sign-up is no longer available. Sign in again to continue.');
+    return identity;
   }
 
   private issueFormToken(res: Response) {
@@ -379,7 +400,7 @@ export class InteractionController {
     const path = `/interaction/${uid}`;
     res.send(page('Verify your email and finish sign-up', form(`${path}/signup/finish`, csrf(uid),
       hidden('challenge', id) + hidden('attempt', attempt) + codeInput + profileInputs(identity)
-      + (attempt ? '' : passwordInput()), 'Create account') + `<a href="${path}/signup">Start over</a>`, error));
+      + (attempt ? '' : passwordInput()), 'Create account') + `<a href="${signupPath(uid, attempt)}">Start over</a>`, error));
   }
 
   private resetView(res: Response, token: string, resetToken = '', error?: string) {

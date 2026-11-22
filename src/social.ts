@@ -27,14 +27,18 @@ export class SocialLogin {
     return `${config.issuer}/social/${provider}/callback`;
   }
 
-  async returnPath(provider: SocialProvider, state: string) {
-    if (!state || state.length > 200 || !config[provider]) throw new FormError('Restart social sign-in.');
-    const { rows: [attempt] } = await this.db.query<{ interaction_id: string }>(
-      `SELECT interaction_id FROM oauth_login_attempts WHERE provider = $1 AND state_digest = $2
-       AND consumed_at IS NULL AND expires_at > now()`, [provider, digest('oauth', state)],
+  async callbackAttempt(provider: SocialProvider, state: string) {
+    const invalid = 'This social sign-in link is invalid or has expired.';
+    if (!state || state.length > 200 || !config[provider]) throw new FormError(invalid);
+    const { rows: [attempt] } = await this.db.query<{
+      id: string; interaction_id: string; consumed: boolean; signup_pending: boolean;
+    }>(
+      `SELECT id, interaction_id, consumed_at IS NOT NULL AS consumed, identity IS NOT NULL AS signup_pending
+       FROM oauth_login_attempts WHERE provider = $1 AND state_digest = $2 AND expires_at > now()`,
+      [provider, digest('oauth', state)],
     );
-    if (!attempt) throw new FormError('Restart social sign-in.');
-    return `/interaction/${attempt.interaction_id}/social/${provider}/return`;
+    if (!attempt) throw new FormError(invalid);
+    return attempt;
   }
 
   async start(provider: SocialProvider, interaction: string) {
@@ -69,7 +73,11 @@ export class SocialLogin {
        AND state_digest = $3 AND consumed_at IS NULL AND expires_at > now() RETURNING id, pkce_verifier, nonce`,
       [provider, interaction, digest('oauth', state)],
     );
-    if (!attempt) throw new FormError('Restart social sign-in.');
+    if (!attempt) {
+      const previous = await this.callbackAttempt(provider, state);
+      if (previous.interaction_id === interaction && previous.signup_pending) return { signup: previous.id };
+      throw new FormError('This social sign-in link has already been used. Start again.');
+    }
     if (callback.searchParams.has('error')) throw new FormError('Social sign-in was cancelled. You can try again.');
     let identity: SocialIdentity;
     try {
@@ -96,13 +104,12 @@ export class SocialLogin {
   }
 
   async pending(id: string, interaction: string) {
-    if (!uuidPattern.test(id)) throw new FormError('Restart social sign-in.');
+    if (!uuidPattern.test(id)) return;
     const { rows: [row] } = await this.db.query<{ identity: SocialIdentity }>(
       `SELECT identity FROM oauth_login_attempts WHERE id = $1 AND interaction_id = $2
        AND identity IS NOT NULL AND expires_at > now()`, [id, interaction],
     );
-    if (!row) throw new FormError('Restart social sign-in.');
-    return row.identity;
+    return row?.identity;
   }
 
   private async googleIdentity(callback: URL, attempt: Attempt, state: string): Promise<SocialIdentity> {

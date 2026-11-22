@@ -11,12 +11,15 @@ npm ci
 cp .env.example .env
 npm run keys:generate
 # Copy the printed AUTH_SECRET into .env.
+# Set SMTP_USER and SMTP_PASS in .env.
 npm run build
 npm run migration:deploy
 npm run dev
 ```
 
-In a second terminal, run `npm run preview` and open [localhost:3100](http://localhost:3100). This is a local OIDC test client. Sign-up and password reset messages appear in the Auth terminal with the local console mail transport. The profile page is at [localhost:3000/account](http://localhost:3000/account) after sign-in. It accepts an HTTPS profile picture URL.
+Set `SMTP_USER` and `SMTP_PASS` to your SMTP2GO SMTP credentials. Auth uses `mail.smtp2go.com:587` with STARTTLS and sends sign-up codes and password reset links from `MAIL_FROM`. Use a sender or domain verified in SMTP2GO. For local testing with codes printed in the Auth terminal, set `MAIL_TRANSPORT=console`. [SMTP2GO SMTP relay settings](https://developers.smtp2go.com/docs/smtp-relay)
+
+In a second terminal, run `npm run preview` and open [localhost:3100](http://localhost:3100). This is a local OIDC test client. The profile page is at [localhost:3000/account](http://localhost:3000/account) after sign-in. It accepts an HTTPS profile picture URL.
 
 ## OAuth providers
 
@@ -37,6 +40,6 @@ Auth uses the provider's OAuth `state` to find the original OIDC request and ret
 
 ## Deploy
 
-Build and publish this image, then configure the [production Compose stack](../util/README.md#production). Provide `AUTH_SECRET`, `AUTH_JWKS` (private JSON key set), `SMTP_URL`, `MAIL_FROM`, and `OIDC_CLIENTS` through the production runtime environment. Keep the signing keys and cookie secret stable across container replacements. Use a distinct client secret for each production application.
+Build and publish this image, then configure the [production Compose stack](../util/README.md#production). Provide `AUTH_SECRET`, `AUTH_JWKS` (private JSON key set), `MAIL_FROM`, and `OIDC_CLIENTS` through the production runtime environment. Configure mail with `SMTP_URL` or with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, and `SMTP_PASS`. A nonempty `SMTP_URL` takes precedence. Keep the signing keys and cookie secret stable across container replacements. Use a distinct client secret for each production application.
 
 Register exact production callback URLs in `OIDC_CLIENTS`. Production clients use `client_secret_basic`, and all clients use authorization code flow with S256 PKCE. Applications discover Auth from `https://auth.reeltone.site/.well-known/openid-configuration` and enforce their own permissions. A password reset revokes the affected Auth sessions and tokens. Downstream applications own revocation of their own session cookies.

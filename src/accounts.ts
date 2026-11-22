@@ -58,15 +58,22 @@ export function readProfile(body: Form): Profile {
 
 @Injectable()
 export class Mailer {
-  private readonly smtp = config.smtpUrl ? nodemailer.createTransport(config.smtpUrl) : undefined;
+  private readonly smtp = config.smtp ? nodemailer.createTransport(config.smtp) : undefined;
 
-  deliver(email: string, subject: string, text: string) {
+  async deliver(email: string, subject: string, text: string) {
     if (!this.smtp) {
       console.log(`[local email] ${email} | ${subject} | ${text}`);
-      return;
+      return true;
     }
-    void this.smtp.sendMail({ from: config.mailFrom, to: { name: '', address: email }, subject, text })
-      .catch(() => console.error('Could not deliver an authentication email'));
+    try {
+      await this.smtp.sendMail({ from: config.mailFrom, to: { name: '', address: email }, subject, text });
+      return true;
+    } catch (error) {
+      const responseCode = typeof error === 'object' && error !== null && 'responseCode' in error
+        && Number.isInteger(error.responseCode) ? ` (SMTP ${error.responseCode})` : '';
+      console.error(`Could not deliver an authentication email${responseCode}`);
+      return false;
+    }
   }
 }
 
@@ -148,8 +155,11 @@ export class Accounts implements OnModuleInit, OnApplicationShutdown {
   async sendVerification(email: string, interaction: string) {
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     const id = await this.makeChallenge('verify', email, code, interaction);
-    this.mail.deliver(email, 'Verify your ReelTone email', `Your ReelTone verification code is ${code}. It expires in 10 minutes.`);
-    return id;
+    const sent = await this.mail.deliver(email, 'Verify your ReelTone email',
+      `Your ReelTone verification code is ${code}. It expires in 10 minutes.`);
+    if (sent) return id;
+    await this.db.query('DELETE FROM email_challenges WHERE id = $1', [id])
+      .catch(() => console.error('Could not remove an undelivered email challenge'));
   }
 
   async requestReset(email: string) {
@@ -162,7 +172,7 @@ export class Accounts implements OnModuleInit, OnApplicationShutdown {
     if (!row) return;
     const secret = randomBytes(32).toString('base64url');
     const id = await this.makeChallenge('reset', email, secret, null, row.id);
-    this.mail.deliver(email, 'Reset your ReelTone password', `Open ${config.issuer}/reset#${id}.${secret} to reset your ReelTone password. The link expires in 20 minutes.`);
+    void this.mail.deliver(email, 'Reset your ReelTone password', `Open ${config.issuer}/reset#${id}.${secret} to reset your ReelTone password. The link expires in 20 minutes.`);
   }
 
   private async makeChallenge(purpose: 'verify' | 'reset', email: string, secret: string,

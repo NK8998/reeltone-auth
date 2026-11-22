@@ -59,11 +59,36 @@ const applications = clients.flatMap((client) => {
   return [{ name: client.client_name ?? client.client_id, url: client.client_uri ? url.href : url.origin }];
 });
 
-const consoleMail = process.env.MAIL_TRANSPORT === 'console' && !production;
-if (process.env.MAIL_TRANSPORT === 'console' && production) throw new Error('Production must use SMTP');
-const smtp = consoleMail ? undefined : new URL(required('SMTP_URL'));
-if (smtp && smtp.protocol !== 'smtp:' && smtp.protocol !== 'smtps:') throw new Error('Use an SMTP or SMTPS URL');
-if (production && smtp?.protocol === 'smtp:') smtp.searchParams.set('requireTLS', 'true');
+function smtpTransport() {
+  const transport = process.env.MAIL_TRANSPORT ?? 'smtp';
+  if (transport === 'console' && !production) return;
+  if (transport !== 'smtp') {
+    throw new Error(production ? 'Production must use SMTP' : 'Set MAIL_TRANSPORT to smtp or console');
+  }
+
+  if (process.env.SMTP_URL) {
+    let url: URL;
+    try { url = new URL(process.env.SMTP_URL); } catch { throw new Error('Set a valid SMTP_URL'); }
+    if (!url.hostname || (url.protocol !== 'smtp:' && url.protocol !== 'smtps:')) {
+      throw new Error('Use an SMTP or SMTPS URL');
+    }
+    if (production && url.protocol === 'smtp:') {
+      url.searchParams.set('requireTLS', 'true');
+      url.searchParams.delete('ignoreTLS');
+    }
+    return url.href;
+  }
+
+  const host = required('SMTP_HOST');
+  const port = Number(process.env.SMTP_PORT || 587);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Set a valid SMTP_PORT');
+  const secure = port === 465;
+  return {
+    host, port, secure, requireTLS: !secure,
+    auth: { user: required('SMTP_USER'), pass: required('SMTP_PASS') },
+    connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 15_000,
+  };
+}
 
 export const config = {
   production,
@@ -77,7 +102,7 @@ export const config = {
   clients,
   applications,
   mailFrom: required('MAIL_FROM'),
-  smtpUrl: smtp?.href,
+  smtp: smtpTransport(),
   google: credentials('GOOGLE'),
   github: credentials('GITHUB'),
 };
